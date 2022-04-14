@@ -1,5 +1,6 @@
 import os, sys
 import numpy as np
+import scipy.spatial
 import json
 import random
 import time
@@ -19,7 +20,6 @@ np.random.seed(1)
 DEBUG = False
 
 def config_parser():
-
     import configargparse
     parser = configargparse.ArgumentParser()
     parser.add_argument('--config', is_config_file=True, 
@@ -84,6 +84,7 @@ def config_parser():
 
     parser.add_argument("--render_bt", action='store_true', 
                         help='render bullet time')
+    parser.add_argument("--predict_video", action='store_true', help='video prediction')
 
     parser.add_argument("--render_test", action='store_true', 
                         help='do not optimize, reload weights and render out render_poses path')
@@ -158,6 +159,7 @@ def config_parser():
 
     return parser
 
+from IPython import embed
 
 def train():
 
@@ -236,7 +238,39 @@ def train():
     render_kwargs_test.update(bds_dict)
 
 
-    if args.render_bt:
+    if args.predict_video:
+        # adapted from render_slowmo_bt pipeline
+        print('RENDER VIDEO PREDICTION')
+        with torch.no_grad():
+
+            testsavedir = os.path.join(basedir, expname, 
+                                    'render-video_prediction_{}_{:06d}'.format('test' if args.render_test else 'path', start))
+            os.makedirs(testsavedir, exist_ok=True)
+            images = torch.Tensor(images)#.to(device)
+            pose_trajectory = poses
+            last_R = scipy.spatial.transform.Rotation.from_matrix(pose_trajectory[-1][:,:3])
+            last_last_R = scipy.spatial.transform.Rotation.from_matrix(pose_trajectory[-2][:,:3])
+            relative_rotation = last_R * last_last_R.inv()
+            last_T = pose_trajectory[-1][:,3]
+            last_last_T = pose_trajectory[-2][:,3]
+            relative_displacement = last_T - last_last_T
+            num_future_frames = 10
+            cur_R = last_R
+            cur_T = last_T
+            for i in range(1, num_future_frames + 1):
+                cur_R = relative_rotation * cur_R
+                cur_rotation_mat = cur_R.as_matrix()
+                cur_T = cur_T + relative_displacement
+                new_pose = np.hstack([cur_rotation_mat, cur_T.reshape((3, 1))])
+                pose_trajectory = np.concatenate([pose_trajectory, new_pose[np.newaxis]])
+            render_video_predict(depths, pose_trajectory,
+                            hwf, args.chunk, render_kwargs_test,
+                            gt_imgs=images, savedir=testsavedir, 
+                            render_factor=args.render_factor)
+            # print('Done rendering', i,testsavedir)
+
+        return
+    elif args.render_bt:
         print('RENDER VIEW INTERPOLATION')
         
         render_poses = torch.Tensor(render_poses).to(device)
